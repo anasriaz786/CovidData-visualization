@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <style>
+      #wrapper {
+    margin:auto;
+    width:1440px;
+  }
+  input {
+    width:50px;
+  }
+  svg {
+    border:1px solid gray;
+    border-radius:10px;
+    margin:5px;
+  }
+  
+  
+  html {
+    font-family: 'Trebuchet MS', sans-serif;
+  }
+  
+  .stateMap {
+    stroke: black;
+  }
+  .stateline {
+    fill: none;
+    stroke: black;
+    stroke-width: 2;
+  }
+  .stateSelected {
+    stroke-width:4;
+  }
+  
+  .colorLegend line{
+    stroke:white;
+    fill:grey;
+  }
+  .colorLegend .domain {
+    stroke:none;
+  }
+  
+  h2, h3 {
+    text-align:center;
+  }
+  .x_axis line, .x_axis .domain {
+    stroke:gray;
+  }
+  .axisLabel, .legendLabel {
+    font-size:20px;
+    fill:gray;
+  }
+  
+  .y_axis line {
+    stroke:gray;
+    /* stroke-opacity: 0.5; */
+    stroke-dasharray: 5,10;
+  }
+  .y_axis text, .x_axis text {
+    fill:gray;
+    font-size:1.5em;
+  }
+  
+  #tooltip {
+    border:1px solid gray;
+    border-radius:5px;
+    background-color: white;
+    position:absolute;
+    padding:10px;
+  }
+  body {
+			  font-family: "Helvetica Neue", sans-serif;
+				margin: 0 auto;
+				display: table;
+			}
+			.name, .value {
+				font-size: .7em;
+			}
+  
+    </style>
+    <meta charset='utf-8'>
+    <title>Project</title>
+    <script src='https://d3js.org/d3.v5.min.js'></script>
+  </head>
+  <body>
+    <div id='wrapper'>
+      <hr style='width:100%'>
+      &nbsp;Continent:&nbsp;
+      <select id='continent-input' >
+        <option value='all'>All</option>
+        <option value='North America'>North America</option>
+        <option value='South America'>South America</option>
+      </select>
+            &nbsp;Attribute&nbsp;
+      <select id='attribute-select' >
+        <option value='Weekly Case % Change'>Weekly Case % Change</option>
+        <option value='Population'>Population</option>
+
+      </select>
+      <br/>
+      <svg id='map'></svg> 
+      <svg id='details'></svg>
+      <div id='barchart'></div>
+      <div id='changechart'></div>
+
+      </a>
+      <div id='tooltip'></div>
+    </div>
+  </body>
+  <script>
+
+var mapSvg ,  detailSvg , barsSvg;
+var southData, attribute, centered, northData;
+
+
+
+// This will run when the page loads
+document.addEventListener('DOMContentLoaded', () => {
+    mapSvg = d3.select('#map').attr("height" , 700).attr("width" , 600);
+    
+    detailSvg = d3.select('#details').attr("height" , 350).attr("width" , 600).attr("transform","translate(0 -350)")
+    barsSvg = d3.select("#changechart").append("svg").attr("width", 1200).attr("height",400).attr("transform","translate(0 -320)")
+    barChartSvg = d3.select('#barchart').append("svg").attr("transform","translate(620 -340)").attr("width", 600).attr("height", 310)
+
+
+    // Load both files before doing anything else
+    Promise.all([d3.json('data/nasageo.json'),
+                 d3.csv('data/covid_south_america_weekly_trend.csv'),
+                 d3.csv('data/north_america_covid_weekly_trend.csv')])
+                 .then(function(values){
+                    
+        
+        mapData = values[0];
+        southData = values[1];
+        northData = values[2];
+
+        combinedData = northData.concat(southData)
+
+        d3.select('#tooltip').style("opacity", 0)
+
+        let cont = d3.select('#continent-input');
+
+        cont.on('change', () => {
+            mapData = values[0];
+            drawMap(mapData)
+        })
+
+        let attr = d3.select('#attribute-select');
+
+        attr.on('change', () => {
+            mapData = values[0];
+            drawMap(mapData)
+        })
+        drawMap(mapData);
+       
+    });
+});
+
+// Draw the map in the #map svg
+function drawMap(mapData2) {
+
+  
+    d3.select("div#wrapper svg#map g").remove();
+    
+    let temp = mapData2;
+    let continentData = {type: 'FeatureCollection'};
+    continentData.features = {}
+
+    // Get the selected continent based on the #continent-input value and cast to a number
+    let continent = d3.select('#continent-input').property('value');
+    if( continent != 'all')
+    {  continentData.features = temp.features.filter(function(a){
+        return a.properties.continent == continent
+    })}
+    else
+    {continentData.features = temp.features}
+  
+    
+    // create the map projection and geoPath
+    let usaProjection = d3.geoMercator()
+                          .fitSize([+mapSvg.style('width').replace('px',''),
+                                    +mapSvg.style('width').replace('px','')], 
+                                    continentData);
+    let geoPath = d3.geoPath()
+                    .projection(usaProjection);
+    
+
+    // Get the selected attribute that you want to visualize 
+    attribute = d3.select('#attribute-select').property('value');
+
+    facts = { att: {} }
+    if(continent == 'North America') {  data = northData }
+    else if (continent == 'South America') {data = southData}
+    else {data = northData.concat(southData)}
+    updateDetails(data)
+
+    for (i in data) {
+      facts.att[data[i]["Country/Other"]] = +data[i][attribute]
+}
+    // Get the min and max value for the selected attribute based on the currently selected continent
+    let extent =d3.extent(Object.values(facts.att)); 
+    
+  
+
+    let g = mapSvg.append('g');
+    let colorScaleNeg, colorScale , colorScalePos
+    if(attribute != 'Population')
+    {
+        // Set the selected color scale based on the #color-scale-select dropdown value
+    selectedColorNeg = d3['interpolateRdBu'];
+    colorScaleNeg = d3.scaleSequential(selectedColorNeg)
+    .domain([d3.min(Object.values(facts.att)), 0]);
+
+
+    selectedColorPos = d3['interpolateViridis'];
+    colorScalePos = d3.scaleSequential(selectedColorPos)
+    .domain([0 , d3.max(Object.values(facts.att))]);
+     drawColorScale(g, colorScaleNeg , colorScalePos);
+    }
+   else{
+    selectedColor = d3['interpolateViridis'];
+    colorScale = d3.scaleSequential(selectedColor)
+    .domain(extent);
+    drawColorScaleAttr(g , colorScale , attribute)
+   }
+
+    // Draw the map
+   let map = g.append("g")
+    map.selectAll('.stateMap')
+          .data(continentData.features)
+          .enter()
+          .append('path')
+            .attr('d',geoPath)
+            .classed('stateMap',true)
+            .attr("stroke-width" , '1px')
+            .attr('id', d => `${d.properties.name}_state`.replaceAll(' ','_'))
+            .attr('fill' , function(d){ 
+                if(d.properties.name == "United States") { d.properties.name = "USA"}
+                else if(d.properties.name == "Dominican Rep.") { d.properties.name = "Dominican Republic"}
+                else if(d.properties.name == "Falkland Is.") { d.properties.name = "Falkland Islands"}
+
+                if(attribute !="Population")
+                {     
+                if(facts.att[d.properties.name] >= undefined){
+                    return colorScalePos(facts.att[d.properties.name])  }
+                else{
+                    return colorScaleNeg(facts.att[d.properties.name]) } 
+                }
+                else{return colorScale(facts.att[d.properties.name])} 
+                })
+            .on('mouseover', function(d,i) {
+                d3.select(this).attr("stroke-width" , '4px')
+                d3.select('#tooltip').style("opacity", 1)
+            })           
+            .on('mousemove', function(d,i) {
+                d3.select("#tooltip").style("opacity", 1)
+                .html("State: " + d.properties.name+  "<br/> "+attribute+": " +facts.att[d.properties.name] )
+                .style("left", (d3.event.pageX + 10) + "px")
+                .style("top", (d3.event.pageY - 15) + "px");
+            })
+            .on('mouseout', function(d,i) {
+               d3.select(this).attr("stroke-width" , '1px')
+               d3.select('#tooltip').style("opacity", 0)
+            })
+            .on('click', function(d,i) {
+                drawBar(data , d.properties.name)
+                showPercentChange(data , d.properties.name)
+            })
+        
+    var zoom = d3.zoom()
+            .scaleExtent([1, 8])
+            .on('zoom', function() {
+                g.selectAll('path')
+                .attr('transform', d3.event.transform);
+            });
+    map.call(zoom);    
+}
+
+// This function will draw the color legend below the map
+function drawColorScaleAttr(g,colorScale , attribute)
+{
+    d3.selectAll('div#wrapper svg#map g text').remove()
+    d3.selectAll('div#wrapper svg#map g g.colorLegend').remove() 
+    d3.selectAll('div#wrapper svg#map g defs').remove()    
+
+    const linearGradient = g.append("defs")
+    .append("linearGradient")
+    .attr("id", "linear-gradient");
+    linearGradient.selectAll("stop")
+    .data(colorScale.ticks()
+    .map((t, i, n) => ({ 
+    offset: `${100*i/n.length}%`, 
+    color: colorScale(t) })))
+    .enter()
+    .append("stop")
+    .attr("offset", d => d.offset)
+    .attr("stop-color", d => d.color);
+    g.append("rect")
+    .attr('transform', `translate(100,620)`)
+    .attr("width", 400)
+    .attr("height", 20)
+    .style("fill", "url(#linear-gradient)");
+    const colorAxis = d3.axisBottom(d3.scaleLinear()
+    .domain(colorScale.domain())
+    .range([0,400]))
+    .ticks(5).tickSize(-20);
+    g.append('g').call(colorAxis)
+    .attr('class','colorLegend')
+    .attr('transform','translate(100,640)')
+    .selectAll('text')
+    .style('text-anchor','end')
+    .attr('dx','-10px')
+    .attr('dy', '0px')
+    .attr('transform','rotate(-45)');
+    g.append('text')
+    .attr('x',100)
+    .attr('y',610)
+    .style('font-size','.9em')
+    .text(attribute);
+}
+function drawColorScale(g,  colorScaleNeg , colorScalePos) {
+    d3.selectAll('div#wrapper svg#map g text').remove()
+    d3.selectAll('div#wrapper svg#map g g.colorLegend').remove() 
+    d3.selectAll('div#wrapper svg#map g defs').remove()    
+    
+    //creating negative colorscale legend
+    const linearGradientNeg = g.append("defs")
+    .append("linearGradient")
+    .attr("id", "linear-gradient");
+    linearGradientNeg.selectAll("stop")
+    .data(colorScaleNeg.ticks()
+    .map((t, i, n) => ({ 
+    offset: `${100*i/n.length}%`, 
+    color: colorScaleNeg(t) })))
+    .enter()
+    .append("stop")
+    .attr("offset", d => d.offset)
+    .attr("stop-color", d => d.color);
+    g.append("rect")
+    .attr('transform', `translate(100,620)`)
+    .attr("width", 400)
+    .attr("height", 20)
+    .style("fill", "url(#linear-gradient)");
+    const colorAxisNeg = d3.axisBottom(d3.scaleLinear()
+    .domain(colorScaleNeg.domain())
+    .range([0,400]))
+    .ticks(5).tickSize(-20);
+    g.append('g').call(colorAxisNeg)
+    .attr('class','colorLegend')
+    .attr('transform','translate(100,640)')
+    .selectAll('text')
+    .style('text-anchor','end')
+    .attr('dx','-10px')
+    .attr('dy', '0px')
+    .attr('transform','rotate(-45)');
+    g.append('text')
+    .attr('x',100)
+    .attr('y',610)
+    .style('font-size','.9em')
+    .text("Decrease % in Cases");
+    
+//creating positive colorscale legend
+     const linearGradientPos = g.append("defs")
+                            .append("linearGradient")
+                            .attr("id", "linear-gradientPos");
+    linearGradientPos.selectAll("stop")
+                  .data(colorScalePos.ticks()
+                  .map((t, i, n) => ({ 
+                    offset: `${100*i/n.length}%`, 
+                    color: colorScalePos(t) })))
+                  .enter()
+                    .append("stop")
+                    .attr("offset", d => d.offset)
+                    .attr("stop-color", d => d.color);
+    g.append("rect")
+     .attr('transform', `translate(100,520)`)
+     .attr("width", 400)
+     .attr("height", 20)
+     .style("fill", "url(#linear-gradientPos)");
+    const colorAxisPos = d3.axisBottom(d3.scaleLinear()
+                        .domain(colorScalePos.domain())
+                        .range([0,400]))
+                        .ticks(5).tickSize(-20);
+    g.append('g').call(colorAxisPos)
+     .attr('class','colorLegend')
+     .attr('transform','translate(100,540)')
+     .selectAll('text')
+     .style('text-anchor','end')
+     .attr('dx','-10px')
+     .attr('dy', '0px')
+     .attr('transform','rotate(-45)');
+    g.append('text')
+     .attr('x',100)
+     .attr('y',510)
+     .style('font-size','.9em')
+     .text("Increase % in Cases");
+
+}
+
+function updateDetails(data)
+{
+    d3.selectAll('#details text').remove()
+
+    //Calculating values for current week cases
+    var currentWeekCases = d3.sum(data.map(function(d){ return d["Cases in the preceding 7 days"]}))
+
+    detailSvg.append("text") .attr('x',25)
+    .attr('y',25)
+    .style('font-size','.9em')
+    .text("Total Cases this week: " +currentWeekCases);
+
+    //Calculating values for previous week cases
+    var previousWeekCases = d3.sum(data.map(function(d){ return d["Cases in the last 7 days"]}))
+
+    detailSvg.append("text") .attr('x',25)
+    .attr('y',40)
+    .style('font-size','.9em')
+    .text("Total Cases last week: " +previousWeekCases);
+
+    //Show Bottom 5 countries with lowest cases per 1 million population
+    dataBottom = data.sort(function(a, b){return b["Cases in the last 7 days/1M pop"] - a["Cases in the last 7 days/1M pop"]}).slice(0,5)
+
+    detailSvg.append("text") .attr('x',25)
+    .attr('y',80)
+    .style('font-size','.9em')
+    .text("Bottom 5 countries with lowest cases per 1 million population:");
+
+    for(i in dataBottom)
+    {
+        detailSvg.append("text") .attr('x',25)
+                .attr('y',(95 + i*15))
+                .style('font-size','.9em')
+                .text(dataBottom[i]["Country/Other"] +": " +dataBottom[i]["Cases in the last 7 days/1M pop"]);
+    }
+     //Show top 5 countries with lowest cases per 1 million population
+     dataTop = data.sort(function(a, b){return a["Cases in the last 7 days/1M pop"] - b["Cases in the last 7 days/1M pop"]}).slice(0,5)
+
+     detailSvg.append("text") .attr('x',25)
+     .attr('y',195)
+     .style('font-size','.9em')
+     .text("Top 5 countries with lowest cases per 1 million population:");
+ 
+     for(i in dataTop)
+     {
+         detailSvg.append("text") .attr('x',25)
+                 .attr('y',(210 + i*15))
+                 .style('font-size','.9em')
+                 .text(dataTop[i]["Country/Other"] +": " +dataTop[i]["Cases in the last 7 days/1M pop"]);
+     }
+
+}
+// Draw the bar chart in the #barchart svg using 
+// the provided country (e.g., `USA')
+function drawBar(data , country)
+{
+    d3.selectAll('#barchart svg').remove()
+    const margin = {top: 10, right: 70, bottom: 20, left: 50},
+    width = 600 - margin.left - margin.right,
+    height = 320 - margin.top - margin.bottom;
+    barChartSvg = d3.select('#barchart').append("svg").attr("transform","translate(620 -340)")
+    .attr("width", width + margin.left + margin.right)
+    .attr("height", height + margin.top + margin.bottom).append("g")
+    .attr("transform",
+          "translate(" + margin.left + "," + margin.top + ")");
+
+    data = data.filter(function(a){
+        return a["Country/Other"] == country
+    })
+     // List of subgroups = header of the csv files = soil condition here
+  const subgroups = ["Cases in the last 7 days" , "Cases in the preceding 7 days" , "Deaths in the last 7 days" , "Deaths in the preceding 7 days"]
+
+  // List of groups = species here = value of the first column called group -> I show them on the X axis
+  const groups = data.map(d => d["Country/Other"])
+
+
+  min = Math.min(d3.min(data, d => d["Cases in the last 7 days"]) , d3.min(data, d => d["Cases in the preceding 7 days"]) , d3.min(data, d => d["Deaths in the last 7 days"]), d3.min(data, d => d["Deaths in the preceding 7 days"]))
+  max = Math.max(d3.max(data, d => d["Cases in the last 7 days"]) , d3.max(data, d => d["Cases in the preceding 7 days"]) , d3.max(data, d => d["Deaths in the last 7 days"]), d3.max(data, d => d["Deaths in the preceding 7 days"]))
+
+  // Add X axis
+  const x = d3.scaleBand()
+      .domain(groups)
+      .range([0, width-150])
+      .padding([0.1])
+  
+      barChartSvg.append("g")
+    .attr("transform", `translate(0, ${height})`)
+    .call(d3.axisBottom(x).tickSize(0));
+
+  // Add Y axis
+  const y = d3.scaleLinear()
+    .domain([min, max])
+    .range([ height, 0 ]);
+  barChartSvg.append("g")
+    .call(d3.axisLeft(y));
+
+  // Another scale for subgroup position?
+  const xSubgroup = d3.scaleBand()
+    .domain(subgroups)
+    .range([0, x.bandwidth()])
+    .padding([0.05])
+
+  // color palette = one color per subgroup
+  const color = d3.scaleOrdinal()
+    .domain(subgroups)
+    .range(['#e41a1c','#377eb8','#4daf4a', '#E9D66B'])
+
+  // Show the bars
+  barChartSvg.append("g")
+    .selectAll("g")
+    // Enter in data = loop group per group
+    .data(data)
+    .join("g")
+      .attr("transform", d => `translate(${x(d["Country/Other"])}, 0)`)
+    .selectAll("rect")
+    .data(function(d) { return subgroups.map(function(key) { return {key: key, value: d[key]}; }); })
+    .join("rect")
+      .attr("x", d => xSubgroup(d.key))
+      .attr("y", d => y(d.value))
+      .attr("width", xSubgroup.bandwidth())
+      .attr("height", d => height - y(d.value))
+      .attr("fill", d => color(d.key));
+
+
+        //legend
+        var legend = barChartSvg.append("g")
+            .attr("font-family", "sans-serif")
+            .attr("font-size", 10)
+            .attr("text-anchor", "end")
+        //adding legend for Cases in the last 7 days
+        legend.append("rect")
+            .attr("x", width - 169)
+            .attr("width", 19)
+            .attr("height", 19)
+            .attr("fill", '#e41a1c');
+
+        legend.append("text")
+            .attr("x", width - 39)
+            .attr("y", 9.5)
+            .attr("dy", "0.32em")
+            .text("Cases in the last 7 days");
+
+        //adding legend for Cases in the preceding 7 days
+        legend.append("rect")
+            .attr("x", width - 169)
+            .attr("y", 25.5)
+            .attr("width", 19)
+            .attr("height", 19)
+            .attr("fill", '#377eb8');
+
+        legend.append("text")
+            .attr("x", width  - 12)
+            .attr("y", 34.5)
+            .attr("dy", "0.32em")
+            .text("Cases in the preceding 7 days");
+
+        //adding legend for Deaths in the last 7 days
+        legend.append("rect")
+            .attr("x", width - 169)
+            .attr("y", 50.5)
+            .attr("width", 19)
+            .attr("height", 19)
+            .attr("fill", '#4daf4a');
+
+        legend.append("text")
+            .attr("x", width - 39)
+            .attr("y", 59.5)
+            .attr("dy", "0.32em")
+            .text("Deaths in the last 7 days");
+
+        //adding legend for Deaths in the preceding 7 days
+        legend.append("rect")
+            .attr("x", width - 169)
+            .attr("y", 75.5)
+            .attr("width", 19)
+            .attr("height", 19)
+            .attr("fill", '#E9D66B');
+
+        legend.append("text")
+            .attr("x", width- 12)
+            .attr("y", 84.5)
+            .attr("dy", "0.32em")
+            .text("Deaths in the preceding 7 days");
+
+}
+function showPercentChange(data , country)
+{
+    d3.select("#changechart svg").remove()
+    data = data.filter(function(a){
+        return a["Country/Other"] == country
+    })
+    
+    data = [{name:'Cases in the last 7 days/1M pop' , value:(data[0]["Cases in the last 7 days/1M pop"])},
+        {name:'Deaths in the last 7 days/1M pop' , value:data[0]["Deaths in the last 7 days/1M pop"]},
+        {name:'Weekly Case % Change' , value:data[0]["Weekly Case % Change"]},
+        {name:'Weekly Death % Change' , value:data[0]["Weekly Death % Change"]}]
+    var margin = {top: 10, right: 10, bottom: 0, left: 170},
+    width = 700 - margin.left - margin.right,
+    height = 400 - margin.top - margin.bottom;
+
+  barsSvg = d3.select("#changechart").append("svg").attr("width", 1200).attr("height",400).attr("transform","translate(0 -320)")
+    .append("g")
+      .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+  var x = d3.scaleLinear()
+      .range([0,width]);
+
+  var y = d3.scaleBand()
+      .rangeRound([height,0])
+      .padding(0.2)
+    x.domain([d3.min(data, function(d){ return d.value; }) , data[0].value]);
+    y.domain(data.map(function(d) { return d.name; }));
+
+    barsSvg.selectAll(".bar")
+    .data(data)
+    .enter().append("rect")
+    .attr("class", "bar")
+    .attr("x", function(d){ return d.value < 0 ? x(d.value) : x(0); })
+    .attr("width", function(d){ ;return d.value < 0 ? x(d.value * -1) - x(0) : x(d.value) - x(0); })
+    .attr("y", function(d){ return y(d.name); })
+                .attr("height", y.bandwidth())
+                .attr("fill", function(d){ return d.value < 0 ? "#d7191c": "#1a9641"; });
+
+    barsSvg.selectAll(".value")
+    .data(data)
+    .enter().append("text")
+        .attr("class", "value")
+        .attr("x", function(d){
+        if (d.value < 0){
+            return (x(d.value * -1) - x(0)) > 20 ? x(d.value) + 2 : x(d.value) - 1;
+        } else {
+            return (x(d.value) - x(0)) > 20 ? x(d.value) - 2 : x(d.value) + 1;
+        }
+    })
+    .attr("y", function(d){ return y(d.name); })
+    .attr("dy", y.bandwidth() - 2.55)
+    .attr("text-anchor", function(d){
+        if (d.value < 0){
+            return (x(d.value * -1) - x(0)) > 20 ? "start" : "end";
+        } else {
+            return (x(d.value) - x(0)) > 20 ? "end" : "start";
+        }
+    })
+    .style("fill", function(d){
+        if (d.value < 0){
+            return (x(d.value * -1) - x(0)) > 20 ? "#fff" : "#3a403d";
+        } else {
+            return (x(d.value) - x(0)) > 20 ? "#fff" : "#3a403d";
+        }
+    })
+    .text(function(d){ return d.value; });       
+    barsSvg.selectAll(".name")
+						.data(data)
+					.enter().append("text")
+						.attr("class", "name")
+						.attr("x", function(d){ return d.value < 0 ? x(0) + 2.55 : x(0) - 2.55 })
+						.attr("y", function(d){ return y(d.name); })
+						.attr("dy", y.bandwidth() - 2.55)
+						.attr("text-anchor", function(d){ return d.value < 0 ? "start" : "end"; })
+						.text(function(d){ return d.name; });
+
+				barsSvg.append("line")
+						.attr("x1", x(0))
+						.attr("x2", x(0))
+						.attr("y1", 0 + margin.top)
+						.attr("y2", height - margin.top)
+						.attr("stroke", "#3a403d")
+						.attr("stroke-width", "1px");
+   
+
+
+}
+
+  </script>
+</html>
